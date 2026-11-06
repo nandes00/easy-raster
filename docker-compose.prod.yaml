@@ -1,0 +1,73 @@
+name: easyraster
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+
+  bus-middleware:
+    build:
+      context: ./bus-middleware
+      dockerfile: Dockerfile.prod
+      network: host
+    ports:
+      - "9000:5023/udp"
+    environment:
+      UDP_ADDR: ":5023"
+      LOG_LEVEL: "debug"
+      FORWARD_ADDR: ${FORWARD_ADDR}
+      AWS_REGION: ${AWS_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      SQS_QUEUE_URL: ${SQS_QUEUE_URL}
+    mem_limit: 128m
+    logging: *default-logging
+    networks: [easyraster]
+    restart: unless-stopped
+
+  bus-tracking:
+    build:
+      context: ./bus-tracking
+      dockerfile: Dockerfile.prod
+      network: host
+    environment:
+      MONGO_URI: ${MONGO_URI}
+      KAFKA_BROKER: ${KAFKA_BROKER}
+      KAFKA_CLIENT_TOPIC: tracking.client.events
+      KAFKA_IAM_AUTH: "true"
+      AWS_REGION: ${AWS_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      SQS_QUEUE_URL: ${SQS_QUEUE_URL}
+      S3_BUCKET: ${S3_BUCKET}
+    mem_limit: 128m
+    logging: *default-logging
+    networks: [easyraster]
+    restart: unless-stopped
+
+  admin-api:
+    build:
+      context: ./admin-api
+      network: host
+    ports:
+      - "8080:8080"
+    environment:
+      MONGO_URI: ${MONGO_URI}
+      KAFKA_BROKER: ${KAFKA_BROKER}
+      KAFKA_CLIENT_TOPIC: tracking.client.events
+      KAFKA_IAM_AUTH: "true"
+      HTTP_PORT: "8080"
+      AWS_REGION: ${AWS_REGION}
+      COGNITO_USER_POOL_ID: ${COGNITO_USER_POOL_ID}
+    mem_limit: 128m
+    logging: *default-logging
+    networks: [easyraster]
+    restart: unless-stopped
+
+
+networks:
+  easyraster:
+    driver: bridge

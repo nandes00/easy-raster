@@ -1,0 +1,180 @@
+name: easyraster
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_HEAP_OPTS: "-Xmx128m -Xms128m"
+    mem_limit: 256m
+    logging: *default-logging
+    networks: [easyraster]
+    restart: unless-stopped
+
+  kafka:
+    image: confluentinc/cp-kafka:7.3.0
+    depends_on: [zookeeper]
+    ports:
+      - "9094:9094"   # external (host access)
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_LISTENERS: INTERNAL://:9092,OUTSIDE://:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,OUTSIDE://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,OUTSIDE:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"
+    mem_limit: 768m
+    healthcheck:
+      test: kafka-topics --bootstrap-server kafka:9092 --list
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+    logging: *default-logging
+    networks: [easyraster]
+    restart: unless-stopped
+
+  # Creates Kafka topics on first boot
+  kafka-init:
+    image: confluentinc/cp-kafka:7.3.0
+    depends_on:
+      kafka: { condition: service_healthy }
+    command:
+      - bash
+      - -c
+      - |
+        kafka-topics --create --topic tracking.raw --if-not-exists --bootstrap-server kafka:9092 --partitions 4 --replication-factor 1 &&
+        kafka-topics --create --topic tracking.client.events --if-not-exists --bootstrap-server kafka:9092 --partitions 4 --replication-factor 1 &&
+        echo 'Kafka topics ready'
+    logging: *default-logging
+    networks: [easyraster]
+
+  mongo:
+    build: ./mongodb/.docker/mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_REPLICA_HOST: mongo
+      MONGO_REPLICA_PORT: 27017
+    volumes:
+      - mongo-data:/data/db
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "27017", "--eval", "db.adminCommand('ping').ok", "--quiet"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    logging: *default-logging
+    networks: [easyraster]
+    restart: unless-stopped
+
+  localstack:
+    image: localstack/localstack:3
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: sqs,s3
+      DEFAULT_REGION: ${AWS_REGION}
+      S3_BUCKET: ${S3_BUCKET}
+    volumes:
+      - localstack-data:/var/lib/localstack
+      - ./localstack/init/ready.d:/etc/localstack/init/ready.d
+    mem_limit: 512m
+    healthcheck:
+      test: curl -sf http://localhost:4566/_localstack/health | grep -q '"sqs"'
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    logging: *default-logging
+    networks: [easyraster]
+    restart: unless-stopped
+
+  bus-middleware:
+    build:
+      context: ./bus-middleware
+      network: host
+    ports:
+      - "9000:5023/udp"
+    environment:
+      UDP_ADDR: ":5023"
+      LOG_LEVEL: "debug"
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_REGION: ${AWS_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/tracking-raw.fifo
+    volumes:
+      - ./bus-middleware:/app
+    depends_on:
+      localstack: { condition: service_healthy }
+    logging: *default-logging
+    networks: [easyraster]
+    restart: unless-stopped
+
+  bus-tracking:
+    build:
+      context: ./bus-tracking
+      network: host
+    command: go run cmd/main.go
+    environment:
+      MONGO_URI: mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@mongo:27017/tracking?authSource=admin&directConnection=true
+      KAFKA_BROKER: kafka:9092
+      KAFKA_CLIENT_TOPIC: tracking.client.events
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_REGION: ${AWS_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/tracking-raw.fifo
+      S3_BUCKET: ${S3_BUCKET}
+    volumes:
+      - ./bus-tracking:/app
+    depends_on:
+      kafka:          { condition: service_healthy }
+      mongo:          { condition: service_healthy }
+      localstack: { condition: service_healthy }
+    logging: *default-logging
+    networks: [easyraster]
+    restart: unless-stopped
+
+  admin-api:
+    build:
+      context: ./admin-api
+      network: host
+    ports:
+      - "8080:8080"
+    environment:
+      MONGO_URI: mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@mongo:27017/tracking?authSource=admin&directConnection=true
+      KAFKA_BROKER: kafka:9092
+      KAFKA_CLIENT_TOPIC: tracking.client.events
+      HTTP_PORT: "8080"
+      AWS_REGION: ${AWS_REGION}
+      COGNITO_USER_POOL_ID: ${COGNITO_USER_POOL_ID}
+    depends_on:
+      mongo: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+    logging: *default-logging
+    networks: [easyraster]
+    restart: unless-stopped
+
+
+networks:
+  easyraster:
+    driver: bridge
+
+volumes:
+  mongo-data:
+  localstack-data:

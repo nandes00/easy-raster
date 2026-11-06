@@ -1,0 +1,16 @@
+# Binaries
+easyraster-middleware
+*.exe
+*.out
+
+# Environment
+.env
+*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Go
+vendor/

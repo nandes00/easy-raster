@@ -1,0 +1,26 @@
+include:
+  - ../mongodb/docker-compose.yaml
+  - ../kafka/docker-compose.yaml
+  - ../bus-middleware/docker-compose.yaml
+
+services:
+  bus-tracking:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - MONGO_URI=mongodb://root:root@mongo:27017/tracking?authSource=admin&directConnection=true
+      - KAFKA_BROKER=kafka:9092
+      - KAFKA_CLIENT_TOPIC=tracking.client.events
+      - SQS_QUEUE_URL=${SQS_QUEUE_URL}
+      - AWS_REGION=${AWS_REGION}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_ENDPOINT_URL=${AWS_ENDPOINT_URL}
+    depends_on:
+      - mongo
+      - kafka
+      - tracker
+    volumes:
+      - .:/app
+    command: go run cmd/main.go
