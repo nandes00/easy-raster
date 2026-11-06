@@ -1,6 +1,6 @@
 # easyraster
 
-Platform for real-time activities tracking. Receives raw GPS data from trackers via UDP, processes and persists it, and delivers events to associated clients.
+Platform for real-time tracking of generic tags embedded in IoT devices. Ingests raw telemetry from tags over UDP, normalizes and persists it, and delivers events to subscribed clients.
 
 ## Architecture
 
